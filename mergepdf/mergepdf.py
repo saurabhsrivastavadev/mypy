@@ -15,12 +15,20 @@ import argparse
 import sys
 import os
 from pathlib import Path
+from io import BytesIO
 
 try:
     from PyPDF2 import PdfWriter, PdfReader
 except ImportError:
     print("Error: PyPDF2 is required. Install it with: pip install PyPDF2")
     sys.exit(1)
+
+# Optional: Pillow for image support (now required for image merging)
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 try:
     import tkinter as tk
@@ -30,38 +38,76 @@ except ImportError:
     GUI_AVAILABLE = False
 
 
-def merge_pdfs(input_files, output_file):
-    """
-    Merge multiple PDF files into one.
-    
+SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
+
+# A4 sizing constants (we'll create 300 DPI pages so physical size is A4)
+A4_DPI = 300
+# Common 300 DPI A4 pixel dimensions (approx 8.27" x 11.69")
+A4_WIDTH_PX = 2480  # could also be 2481 depending on rounding
+A4_HEIGHT_PX = 3508
+
+
+def merge_pdfs_and_images(input_files, output_file):
+    """Merge multiple PDF and image files into a single PDF.
+
+    Each image is converted to a single-page PDF and appended in order.
+
     Args:
-        input_files (list): List of input PDF file paths
+        input_files (list[str]): List of input file paths (PDF or images)
         output_file (str): Output PDF file path
     """
     pdf_writer = PdfWriter()
-    
+    total_input = len(input_files)
     for file_path in input_files:
+        suffix = Path(file_path).suffix.lower()
         try:
             print(f"Processing: {file_path}")
-            with open(file_path, 'rb') as file:
-                pdf_reader = PdfReader(file)
-                
-                # Add all pages from the current PDF
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    pdf_writer.add_page(page)
-                    
-                print(f"  Added {len(pdf_reader.pages)} pages from {file_path}")
-                
+            if suffix == '.pdf':
+                with open(file_path, 'rb') as file:
+                    pdf_reader = PdfReader(file)
+                    for page_num in range(len(pdf_reader.pages)):
+                        pdf_writer.add_page(pdf_reader.pages[page_num])
+                    print(f"  Added {len(pdf_reader.pages)} pages from PDF {file_path}")
+            elif suffix in SUPPORTED_IMAGE_EXTS:
+                if not PIL_AVAILABLE:
+                    print("  Skipped (Pillow not installed)")
+                    continue
+                with Image.open(file_path) as img:
+                    # Convert to RGB (drop alpha) for PDF compatibility
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+
+                    # Scale image to fit within A4 while preserving aspect ratio
+                    scale = min(A4_WIDTH_PX / img.width, A4_HEIGHT_PX / img.height)
+                    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                    if new_size != (img.width, img.height):
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+                    # Create A4 white canvas and center the image
+                    a4_canvas = Image.new("RGB", (A4_WIDTH_PX, A4_HEIGHT_PX), "white")
+                    offset = ((A4_WIDTH_PX - img.width) // 2, (A4_HEIGHT_PX - img.height) // 2)
+                    a4_canvas.paste(img, offset)
+
+                    buffer = BytesIO()
+                    a4_canvas.save(buffer, format="PDF", resolution=A4_DPI)
+                    buffer.seek(0)
+                    img_pdf = PdfReader(buffer)
+                    pdf_writer.add_page(img_pdf.pages[0])
+                    print(f"  Converted image to A4 PDF page: {file_path} (placed at {img.width}x{img.height} within A4)")
+            else:
+                print(f"  Skipped unsupported file type: {file_path}")
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
             continue
-    
-    # Write the merged PDF to output file
+
+    if len(pdf_writer.pages) == 0:
+        print("Error: No pages were added. Nothing to write.")
+        sys.exit(1)
+
     try:
         with open(output_file, 'wb') as output:
             pdf_writer.write(output)
-        print(f"\nSuccessfully merged {len(input_files)} files into: {output_file}")
+        print(f"\nSuccessfully merged {total_input} file(s) into: {output_file}")
         print(f"Total pages in merged PDF: {len(pdf_writer.pages)}")
     except Exception as e:
         print(f"Error writing output file {output_file}: {e}")
@@ -88,31 +134,41 @@ def select_files_gui():
     try:
         # Select input files
         input_files = filedialog.askopenfilenames(
-            title="Select PDF files to merge",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
-            multiple=True
+            title="Select PDF and image files to merge",
+            filetypes=[
+                ("PDF and Images", "*.pdf *.png *.jpg *.jpeg *.bmp *.tiff *.tif *.webp"),
+                ("PDF files", "*.pdf"),
+                ("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff *.tif *.webp"),
+                ("All files", "*.*"),
+            ],
+            multiple=True,
         )
         
         if not input_files:
             print("No files selected. Operation cancelled.")
             return None, None
         
-        # Validate that selected files are PDFs
+        # Validate that selected files are PDFs or supported images
         valid_files = []
         for file_path in input_files:
-            if Path(file_path).suffix.lower() == '.pdf':
-                valid_files.append(file_path)
+            suffix = Path(file_path).suffix.lower()
+            if suffix == '.pdf' or suffix in SUPPORTED_IMAGE_EXTS:
+                if suffix in SUPPORTED_IMAGE_EXTS and not PIL_AVAILABLE:
+                    print(f"Warning: Pillow not installed. Skipping image file: {file_path}")
+                else:
+                    valid_files.append(file_path)
             else:
-                print(f"Warning: Skipping non-PDF file: {file_path}")
+                print(f"Warning: Skipping unsupported file: {file_path}")
         
         if not valid_files:
             if GUI_AVAILABLE:
                 messagebox.showerror("Error", "No valid PDF files selected.")
             return None, None
         
-        if len(valid_files) < 2:
+        # Allow even a single file (user may want to convert an image to PDF)
+        if len(valid_files) == 0:
             if GUI_AVAILABLE:
-                messagebox.showwarning("Warning", "Please select at least 2 PDF files to merge.")
+                messagebox.showerror("Error", "No valid PDF or image files selected.")
             return None, None
         
         # Select output file
@@ -137,34 +193,31 @@ def select_files_gui():
 
 
 def validate_input_files(file_paths):
-    """
-    Validate that input files exist and are PDF files.
-    
+    """Validate input files (PDFs or supported images).
+
     Args:
-        file_paths (list): List of file paths to validate
-        
+        file_paths (list[str]): Paths to validate
+
     Returns:
-        list: List of valid PDF file paths
+        list[str]: Valid file paths
     """
     valid_files = []
-    
     for file_path in file_paths:
         path = Path(file_path)
-        
         if not path.exists():
             print(f"Warning: File not found: {file_path}")
             continue
-            
         if not path.is_file():
             print(f"Warning: Not a file: {file_path}")
             continue
-            
-        if path.suffix.lower() != '.pdf':
-            print(f"Warning: Not a PDF file: {file_path}")
-            continue
-            
-        valid_files.append(str(path))
-    
+        suffix = path.suffix.lower()
+        if suffix == '.pdf' or suffix in SUPPORTED_IMAGE_EXTS:
+            if suffix in SUPPORTED_IMAGE_EXTS and not PIL_AVAILABLE:
+                print(f"Warning: Pillow not installed. Skipping image: {file_path}")
+                continue
+            valid_files.append(str(path))
+        else:
+            print(f"Warning: Unsupported file type: {file_path}")
     return valid_files
 
 
@@ -184,7 +237,7 @@ Examples:
     parser.add_argument(
         'input_files',
         nargs='*',
-        help='PDF files to merge (if not provided, a file selection dialog will open)'
+    help='PDF/image files to merge (if not provided, a file selection dialog will open)'
     )
     
     parser.add_argument(
@@ -213,16 +266,9 @@ Examples:
         # Validate input files from command line
         valid_files = validate_input_files(args.input_files)
         output_filename = args.output
-        
         if not valid_files:
-            print("Error: No valid PDF files provided")
+            print("Error: No valid PDF or image files provided")
             sys.exit(1)
-        
-        if len(valid_files) < 2:
-            print("Warning: Only one valid PDF file found. No merging needed.")
-            if len(valid_files) == 1:
-                print(f"You can copy {valid_files[0]} to {output_filename} if needed.")
-            sys.exit(0)
         
         # Check if output file already exists
         if os.path.exists(output_filename):
@@ -236,8 +282,11 @@ Examples:
         print(f"Output file: {output_filename}")
         print()
     
-    # Merge the PDFs
-    merge_pdfs(valid_files, output_filename)
+    # Merge the PDFs & images
+    if any(Path(f).suffix.lower() in SUPPORTED_IMAGE_EXTS for f in valid_files) and not PIL_AVAILABLE:
+        print("Error: Image files supplied but Pillow is not installed. Install with: pip install Pillow")
+        sys.exit(1)
+    merge_pdfs_and_images(valid_files, output_filename)
 
 
 if __name__ == '__main__':
