@@ -55,6 +55,9 @@ python mergepdf.py file1.pdf file2.pdf --verbose
 ## Command Line Arguments
 
 - `input_files`: One or more PDF and/or image files to merge
+- `--image-size`: How to place images
+   - `a4` (default): resize and center on an A4 page
+   - `original`: keep original image resolution as page size
 - `-o, --output`: Output filename (default: merged.pdf)
 - `-v, --verbose`: Show verbose output
 - `-h, --help`: Show help message
@@ -79,6 +82,11 @@ python mergepdf.py file1.pdf file2.pdf --verbose
 4. Merge all PDFs & images in current directory:
    ```bash
    python mergepdf.py *.pdf *.jpg *.png --output complete_collection.pdf
+   ```
+
+5. Keep original image resolution (no A4 normalization):
+   ```bash
+   python mergepdf.py photo1.jpg scan2.png --image-size original --output images_original.pdf
    ```
 
 ## Features

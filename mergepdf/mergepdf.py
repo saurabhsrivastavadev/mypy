@@ -47,7 +47,7 @@ A4_WIDTH_PX = 2480  # could also be 2481 depending on rounding
 A4_HEIGHT_PX = 3508
 
 
-def merge_pdfs_and_images(input_files, output_file):
+def merge_pdfs_and_images(input_files, output_file, image_size: str = "a4"):
     """Merge multiple PDF and image files into a single PDF.
 
     Each image is converted to a single-page PDF and appended in order.
@@ -77,23 +77,33 @@ def merge_pdfs_and_images(input_files, output_file):
                     if img.mode in ("RGBA", "P"):
                         img = img.convert("RGB")
 
-                    # Scale image to fit within A4 while preserving aspect ratio
-                    scale = min(A4_WIDTH_PX / img.width, A4_HEIGHT_PX / img.height)
-                    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
-                    if new_size != (img.width, img.height):
-                        img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-                    # Create A4 white canvas and center the image
-                    a4_canvas = Image.new("RGB", (A4_WIDTH_PX, A4_HEIGHT_PX), "white")
-                    offset = ((A4_WIDTH_PX - img.width) // 2, (A4_HEIGHT_PX - img.height) // 2)
-                    a4_canvas.paste(img, offset)
-
                     buffer = BytesIO()
-                    a4_canvas.save(buffer, format="PDF", resolution=A4_DPI)
-                    buffer.seek(0)
-                    img_pdf = PdfReader(buffer)
-                    pdf_writer.add_page(img_pdf.pages[0])
-                    print(f"  Converted image to A4 PDF page: {file_path} (placed at {img.width}x{img.height} within A4)")
+
+                    if image_size == "a4":
+                        # Scale image to fit within A4 while preserving aspect ratio
+                        scale = min(A4_WIDTH_PX / img.width, A4_HEIGHT_PX / img.height)
+                        new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                        if new_size != (img.width, img.height):
+                            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+                        # Create A4 white canvas and center the image
+                        a4_canvas = Image.new("RGB", (A4_WIDTH_PX, A4_HEIGHT_PX), "white")
+                        offset = ((A4_WIDTH_PX - img.width) // 2, (A4_HEIGHT_PX - img.height) // 2)
+                        a4_canvas.paste(img, offset)
+
+                        a4_canvas.save(buffer, format="PDF", resolution=A4_DPI)
+                        buffer.seek(0)
+                        img_pdf = PdfReader(buffer)
+                        pdf_writer.add_page(img_pdf.pages[0])
+                        print(f"  Converted image to A4 PDF page: {file_path} (placed at {img.width}x{img.height} within A4)")
+                    else:  # original
+                        # Save the image directly as a single-page PDF at its native pixel size.
+                        # Note: PDF uses points; Pillow handles mapping. Large images may create large pages.
+                        img.save(buffer, format="PDF")
+                        buffer.seek(0)
+                        img_pdf = PdfReader(buffer)
+                        pdf_writer.add_page(img_pdf.pages[0])
+                        print(f"  Added image at original resolution as PDF page: {file_path} ({img.width}x{img.height}px)")
             else:
                 print(f"  Skipped unsupported file type: {file_path}")
         except Exception as e:
@@ -162,7 +172,7 @@ def select_files_gui():
         
         if not valid_files:
             if GUI_AVAILABLE:
-                messagebox.showerror("Error", "No valid PDF files selected.")
+                messagebox.showerror("Error", "No valid PDF or image files selected.")
             return None, None
         
         # Allow even a single file (user may want to convert an image to PDF)
@@ -182,7 +192,7 @@ def select_files_gui():
         if not output_file:
             print("No output file specified. Operation cancelled.")
             return None, None
-        
+
         return valid_files, output_file
         
     except Exception as e:
@@ -251,6 +261,13 @@ Examples:
         action='store_true',
         help='Verbose output'
     )
+
+    parser.add_argument(
+        '--image-size',
+        choices=['a4', 'original'],
+        default='a4',
+        help='How to place images: a4 (default, resize & center on A4) or original (keep original resolution)'
+    )
     
     args = parser.parse_args()
     
@@ -286,7 +303,7 @@ Examples:
     if any(Path(f).suffix.lower() in SUPPORTED_IMAGE_EXTS for f in valid_files) and not PIL_AVAILABLE:
         print("Error: Image files supplied but Pillow is not installed. Install with: pip install Pillow")
         sys.exit(1)
-    merge_pdfs_and_images(valid_files, output_filename)
+    merge_pdfs_and_images(valid_files, output_filename, image_size=args.image_size)
 
 
 if __name__ == '__main__':
